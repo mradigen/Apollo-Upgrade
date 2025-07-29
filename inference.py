@@ -19,19 +19,16 @@ def main(input_wav, output_wav):
     model = look2hear.models.BaseModel.from_pretrain("/kaggle/working/Model", sr=44100, win=20, feature_dim=256, layer=6).cuda()
     test_data = load_audio(input_wav)
     
-    # Measure GMAC (Giga Multiply-Accumulate Operations)
-    print("Measuring model complexity...")
+    print("Measuring now")
     
-    # Create a dummy input tensor with the same shape as test_data for profiling
     dummy_input = torch.randn_like(test_data)
     
-    # Profile the model to get MACs and parameters
     macs, params = profile(model, inputs=(dummy_input,))
-    gmacs = macs / 1e9  # Convert MACs to GMACs
+    gmacs = macs / 1e9
     
-    print(f"Model Parameters: {params:,}")
-    print(f"Model MACs: {macs:,}")
-    print(f"Model GMACs: {gmacs:.3f}")
+    print(f"Parameters: {params:,}")
+    print(f"MACs: {macs:,}")
+    print(f"GMACs: {gmacs:.3f}")
     
     # Run inference
     with torch.no_grad():
