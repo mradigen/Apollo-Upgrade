@@ -1,2 +1,7 @@
 *.pyc
 *.DS_Store
+# data*
+asserts
+*.mp3
+*.opus
+*.wav
