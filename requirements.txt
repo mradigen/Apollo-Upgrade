@@ -83,6 +83,6 @@ tqdm==4.66.5
 triton==2.0.0
 typing-extensions==4.9.0
 urllib3==1.26.13
-visqol==3.3.3
+visqol
 wcwidth==0.2.13
 yarl==1.9.6
