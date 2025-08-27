@@ -72,13 +72,13 @@ soxr==0.5.0.post1
 sympy==1.12
 thop
 threadpoolctl==3.5.0
-torch==2.0.0+cu118
+# torch==2.0.0+cu118
 torch-complex==0.4.4
 torch-mir-eval==0.4
 torch-optimizer==0.3.0
-torchaudio==2.0.1+cu118
+# torchaudio==2.0.1+cu118
 torchmetrics==1.4.1
-torchvision==0.15.1+cu118
+# torchvision==0.15.1+cu118
 tqdm==4.66.5
 triton==2.0.0
 typing-extensions==4.9.0
