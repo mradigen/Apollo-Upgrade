@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import os
 from .base_model import BaseModel
 
 class RMSNorm(nn.Module):
@@ -215,7 +216,7 @@ class Apollo(BaseModel):
         super().__init__(sample_rate=sr)
         
         self.sr = sr
-        self.win = int(sr * win // 2000)
+        self.win = int(sr * win // os.getenv("A_WIN_PARTS", 1000))
         self.stride = self.win // 2
         self.enc_dim = self.win // 2 + 1
         self.feature_dim = feature_dim
@@ -224,8 +225,8 @@ class Apollo(BaseModel):
         # 80 bands
         # bandwidth = int(self.win / 160)
         # self.band_width = [bandwidth]*79
-        bandwidth = int(self.win / 80)  # Instead of 160
-        self.band_width = [bandwidth]*39  # Instead of 79
+        bandwidth = int(self.win / os.getenv("A_BANDWIDTH_D", 160))  # Instead of 160
+        self.band_width = [bandwidth] * os.getenv("A_BANDWIDTH_N", 79)  # Instead of 79
         self.band_width.append(self.enc_dim - np.sum(self.band_width))
         self.nband = len(self.band_width)
         print(self.band_width, self.nband)
