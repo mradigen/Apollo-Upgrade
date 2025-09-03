@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import math
 from .base_model import BaseModel
 
 class RMSNorm(nn.Module):
@@ -47,88 +46,97 @@ class RMVN(nn.Module):
 
         return input_norm.reshape(input.shape)
     
-class WMSA1D(nn.Module):
+class Roformer(nn.Module):
     """
-    Window-based Multi-Head Self-Attention (1D) inspired by Uformer.
-    Operates on the sequence dimension (T) using non-overlapping windows.
-    Complexity reduces from O(T^2) to O(T * W), where W is window size.
+    Transformer with rotary positional embedding.
     """
-    def __init__(self, input_size, hidden_size, num_head=8, window=8,
-                 input_drop=0., attention_drop=0.):
+    def __init__(self, input_size, hidden_size, num_head=8, theta=10000, window=10000, 
+                 input_drop=0., attention_drop=0., causal=True):
         super().__init__()
 
-        assert hidden_size % num_head == 0, "hidden_size must be divisible by num_head"
         self.input_size = input_size
         self.hidden_size = hidden_size // num_head
         self.num_head = num_head
-        self.window_size = max(1, int(window))
+        self.theta = theta  # base frequency for RoPE
+        self.window = window
+        # pre-calculate rotary embeddings
+        cos_freq, sin_freq = self._calc_rotary_emb()
+        self.register_buffer("cos_freq", cos_freq)  # win, N
+        self.register_buffer("sin_freq", sin_freq)  # win, N
+        
         self.attention_drop = attention_drop
+        self.causal = causal
+        self.eps = 1e-5
 
         self.input_norm = RMSNorm(self.input_size)
         self.input_drop = nn.Dropout(p=input_drop)
-        self.qkv = nn.Conv1d(self.input_size, self.hidden_size*self.num_head*3, 1, bias=False)
-        self.proj = nn.Conv1d(self.hidden_size*self.num_head, self.input_size, 1, bias=False)
+        self.weight = nn.Conv1d(self.input_size, self.hidden_size*self.num_head*3, 1, bias=False)
+        self.output = nn.Conv1d(self.hidden_size*self.num_head, self.input_size, 1, bias=False)
 
-        # MLP block (gated) similar to the original module for parity
-        self.MLP = nn.Sequential(
-            RMSNorm(self.input_size),
-            nn.Conv1d(self.input_size, self.input_size*8, 1, bias=False),
-            nn.SiLU()
-        )
+        self.MLP = nn.Sequential(RMSNorm(self.input_size),
+                                 nn.Conv1d(self.input_size, self.input_size*8, 1, bias=False),
+                                 nn.SiLU()
+                                )
         self.MLP_output = nn.Conv1d(self.input_size*4, self.input_size, 1, bias=False)
 
-    def _pad_to_window(self, x, ws):
-        # x: (B, H, T, C)
-        T = x.shape[2]
-        pad_len = (ws - (T % ws)) % ws
-        if pad_len > 0:
-            pad = torch.zeros((*x.shape[:2], pad_len, x.shape[3]), dtype=x.dtype, device=x.device)
-            x = torch.cat([x, pad], dim=2)
-        return x, pad_len
+    def _calc_rotary_emb(self):
+        freq = 1. / (self.theta ** (torch.arange(0, self.hidden_size, 2)[:(self.hidden_size // 2)] / self.hidden_size))  # theta_i
+        freq = freq.reshape(1, -1)  # 1, N//2
+        pos = torch.arange(0, self.window).reshape(-1, 1)  # win, 1
+        cos_freq = torch.cos(pos*freq)  # win, N//2
+        sin_freq = torch.sin(pos*freq)  # win, N//2
+        cos_freq = torch.stack([cos_freq]*2, -1).reshape(self.window, self.hidden_size)  # win, N
+        sin_freq = torch.stack([sin_freq]*2, -1).reshape(self.window, self.hidden_size)  # win, N
 
+        return cos_freq, sin_freq
+    
+    def _add_rotary_emb(self, feature, pos):
+        # feature shape: ..., N
+        N = feature.shape[-1]
+
+        feature_reshape = feature.reshape(-1, N)
+        pos = min(pos, self.window-1)
+        cos_freq = self.cos_freq[pos]
+        sin_freq = self.sin_freq[pos]
+        reverse_sign = torch.from_numpy(np.asarray([-1, 1])).to(feature.device).type(feature.dtype)
+        feature_reshape_neg = (torch.flip(feature_reshape.reshape(-1, N//2, 2), [-1]) * reverse_sign.reshape(1, 1, 2)).reshape(-1, N)
+        feature_rope = feature_reshape * cos_freq.unsqueeze(0) + feature_reshape_neg * sin_freq.unsqueeze(0)
+    
+        return feature_rope.reshape(feature.shape)
+
+    def _add_rotary_sequence(self, feature):
+        # feature shape: ..., T, N
+        T, N = feature.shape[-2:]
+        feature_reshape = feature.reshape(-1, T, N)
+
+        cos_freq = self.cos_freq[:T]
+        sin_freq = self.sin_freq[:T]
+        reverse_sign = torch.from_numpy(np.asarray([-1, 1])).to(feature.device).type(feature.dtype)
+        feature_reshape_neg = (torch.flip(feature_reshape.reshape(-1, N//2, 2), [-1]) * reverse_sign.reshape(1, 1, 2)).reshape(-1, T, N)
+        feature_rope = feature_reshape * cos_freq.unsqueeze(0) + feature_reshape_neg * sin_freq.unsqueeze(0)
+    
+        return feature_rope.reshape(feature.shape)
+    
     def forward(self, input):
-        # input: (B, N, T)
+        # input shape: B, N, T
+
         B, _, T = input.shape
-        ws = min(self.window_size, max(1, T))
 
-        qkv = self.qkv(self.input_drop(self.input_norm(input)))  # (B, 3*H*Nh, T)
-        qkv = qkv.reshape(B, self.num_head, self.hidden_size*3, T).mT  # (B, H, T, 3*C)
-        Q, K, V = torch.split(qkv, self.hidden_size, dim=-1)  # each: (B, H, T, C)
+        weight = self.weight(self.input_drop(self.input_norm(input))).reshape(B, self.num_head, self.hidden_size*3, T).mT
+        Q, K, V = torch.split(weight, self.hidden_size, dim=-1)  # B, num_head, T, N
+        
+        # rotary positional embedding
+        Q_rot = self._add_rotary_sequence(Q)
+        K_rot = self._add_rotary_sequence(K)
 
-        # pad sequence length to multiple of window size
-        Q, pad_len_q = self._pad_to_window(Q, ws)
-        K, _ = self._pad_to_window(K, ws)
-        V, _ = self._pad_to_window(V, ws)
+        attention_output = F.scaled_dot_product_attention(Q_rot.contiguous(), K_rot.contiguous(), V.contiguous(), dropout_p=self.attention_drop, is_causal=self.causal)  # B, num_head, T, N
+        attention_output = attention_output.mT.reshape(B, -1, T)
+        output = self.output(attention_output) + input
 
-        T_pad = Q.shape[2]
-        num_windows = T_pad // ws
+        gate, z = self.MLP(output).chunk(2, dim=1)
+        output = output + self.MLP_output(F.silu(gate) * z)
 
-        # reshape to (B*H*num_windows, ws, C)
-        def reshape_windows(x):
-            return x.reshape(B, self.num_head, num_windows, ws, self.hidden_size) \
-                    .permute(0,1,2,3,4).reshape(B*self.num_head*num_windows, ws, self.hidden_size)
-
-        Qw = reshape_windows(Q)
-        Kw = reshape_windows(K)
-        Vw = reshape_windows(V)
-
-        Aw = F.scaled_dot_product_attention(Qw, Kw, Vw, dropout_p=self.attention_drop, is_causal=False)  # (B*H*Wn, ws, C)
-
-        # restore to (B, H, T_pad, C)
-        Aw = Aw.reshape(B, self.num_head, num_windows, ws, self.hidden_size) \
-               .reshape(B, self.num_head, T_pad, self.hidden_size)
-        if pad_len_q > 0:
-            Aw = Aw[:, :, :T, :]
-
-        out = Aw.mT.reshape(B, -1, T)  # (B, H*C, T)
-        out = self.proj(out)
-        out = out + input
-
-        gate, z = self.MLP(out).chunk(2, dim=1)
-        out = out + self.MLP_output(F.silu(gate) * z)
-
-        # return tuple for interface compatibility
-        return out, (None, None)
+        return output, (K_rot, V)
     
 class ConvActNorm1d(nn.Module):
     def __init__(self, in_channel, hidden_channel, kernel=7, causal=False):
@@ -177,22 +185,22 @@ class BSNet(nn.Module):
         super(BSNet, self).__init__()
 
         self.feature_dim = feature_dim
-        # Replace global attention with Window-based MSA to reduce complexity (along band axis)
-        # window is on the band dimension (nband). Tune as needed.
-        self.band_net = WMSA1D(self.feature_dim, self.feature_dim, num_head=8, window=8)
+
+        self.band_net = Roformer(self.feature_dim, self.feature_dim, num_head=8, window=100, causal=False)
         self.seq_net = ICB(self.feature_dim, kernel=kernel)
 
     def forward(self, input):
         # input shape: B, nband, N, T
+
         B, nband, N, T = input.shape
 
-        # band comm: attention along band axis using W-MSA
-        band_input = input.permute(0, 3, 2, 1).reshape(B * T, -1, nband)
+        # band comm
+        band_input = input.permute(0,3,2,1).reshape(B*T, -1, nband)
         band_output, _ = self.band_net(band_input)
-        band_output = band_output.reshape(B, T, -1, nband).permute(0, 3, 2, 1)
+        band_output = band_output.reshape(B, T, -1, nband).permute(0,3,2,1)
 
-        # sequence modeling along time
-        output = self.seq_net(band_output.reshape(B * nband, -1, T)).reshape(B, nband, -1, T)
+        # sequence modeling
+        output = self.seq_net(band_output.reshape(B*nband, -1, T)).reshape(B, nband, -1, T)  # B, nband, N, T
 
         return output
     
@@ -207,7 +215,6 @@ class Apollo(BaseModel):
         super().__init__(sample_rate=sr)
         
         self.sr = sr
-        # self.win = int(sr * win // 1000)
         self.win = int(sr * win // 2000)
         self.stride = self.win // 2
         self.enc_dim = self.win // 2 + 1
@@ -215,10 +222,8 @@ class Apollo(BaseModel):
         self.eps = torch.finfo(torch.float32).eps
 
         # 80 bands
-        # bandwidth = int(self.win / 160)
-        # self.band_width = [bandwidth]*79
-        bandwidth = int(self.win / 80)  # Instead of 160
-        self.band_width = [bandwidth]*39  # Instead of 79
+        bandwidth = int(self.win / 160)
+        self.band_width = [bandwidth]*79
         self.band_width.append(self.enc_dim - np.sum(self.band_width))
         self.nband = len(self.band_width)
         print(self.band_width, self.nband)
