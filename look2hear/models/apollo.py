@@ -215,7 +215,7 @@ class Apollo(BaseModel):
         super().__init__(sample_rate=sr)
         
         self.sr = sr
-        self.win = int(sr * win // 1000)
+        self.win = int(sr * win // 2000)
         self.stride = self.win // 2
         self.enc_dim = self.win // 2 + 1
         self.feature_dim = feature_dim
