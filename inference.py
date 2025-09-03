@@ -17,7 +17,7 @@ def main(input_wav, output_wav):
     os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
     # model = look2hear.models.Apollo(sr=44100, win=20, feature_dim=256, layer=6).cuda()
-    model = look2hear.models.Apollo(sr=44100, win=20, feature_dim=128, layer=3).cuda()
+    model = look2hear.models.Apollo(sr=44100, win=20, feature_dim=256, layer=3).cuda()
     test_data = load_audio(input_wav)
     
     print("Measuring now")
