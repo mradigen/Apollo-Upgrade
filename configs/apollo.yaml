@@ -96,7 +96,7 @@ logger:
 
 trainer:
   _target_: pytorch_lightning.Trainer
-  devices: [0,1,2,3,4,5,6,7]
+  devices: [0,1]
   max_epochs: 500
   sync_batchnorm: true
   default_root_dir: ${exp.dir}/${exp.name}/
