@@ -222,8 +222,10 @@ class Apollo(BaseModel):
         self.eps = torch.finfo(torch.float32).eps
 
         # 80 bands
-        bandwidth = int(self.win / 160)
-        self.band_width = [bandwidth]*79
+        # bandwidth = int(self.win / 160)
+        # self.band_width = [bandwidth]*79
+        bandwidth = int(self.win / 80)  # Instead of 160
+        self.band_width = [bandwidth]*39  # Instead of 79
         self.band_width.append(self.enc_dim - np.sum(self.band_width))
         self.nband = len(self.band_width)
         print(self.band_width, self.nband)
