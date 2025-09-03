@@ -111,10 +111,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
     to_save = system.audio_model.serialize()
     torch.save(to_save, os.path.join(cfg.exp.dir, cfg.exp.name, "best_model.pth"))
-    # import wandb
-    # if wandb.run:
-    #     print_only("Closing wandb!")
-    #     wandb.finish()
+    import wandb
+    if wandb.run:
+        print_only("Closing wandb!")
+        wandb.finish()
 
 if __name__ == "__main__":
     
