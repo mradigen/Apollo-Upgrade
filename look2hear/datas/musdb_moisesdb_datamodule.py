@@ -82,7 +82,7 @@ class MusdbMoisesdbDataset(Dataset):
             "bass", 
             # "bowed_strings", 
             "drums", 
-            "guitar",
+            # "guitar",
             "other", 
             # "other_keys", 
             # "other_plucked", 
