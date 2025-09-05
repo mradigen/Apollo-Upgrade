@@ -96,29 +96,29 @@ class MusdbMoisesdbDataset(Dataset):
         return self.num_samples
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        if random.random() > 0.5:
-            select_stems = random.randint(1, self.num_stems)
-            select_stems = random.choices(self.instruments, k=select_stems)
-            ori_wav = []
-            for stem in select_stems:
-                h5path = random.choice(os.listdir(os.path.join(self.data_dir, stem)))
-                datas = h5py.File(os.path.join(self.data_dir, stem, h5path), 'r')['data']
-                random_index = random.randint(0, datas.shape[0]-1)
-                music_wav = torch.FloatTensor(datas[random_index])
-                start = random.randint(0, music_wav.shape[-1] - self.segments)
-                music_wav = music_wav[:, start:start+self.segments]
-                
-                rescale_snr = random.randint(self.snr_range[0], self.snr_range[1])
-                music_wav = music_wav * np.sqrt(10**(rescale_snr/10))
-                ori_wav.append(music_wav)
-            ori_wav = torch.stack(ori_wav).sum(0)
-        else:
-            h5path = random.choice(os.listdir(os.path.join(self.data_dir, "mixture")))
-            datas = h5py.File(os.path.join(self.data_dir, "mixture", h5path), 'r')['data']
+        # if random.random() > 0.5:
+        select_stems = random.randint(1, self.num_stems)
+        select_stems = random.choices(self.instruments, k=select_stems)
+        ori_wav = []
+        for stem in select_stems:
+            h5path = random.choice(os.listdir(os.path.join(self.data_dir, stem)))
+            datas = h5py.File(os.path.join(self.data_dir, stem, h5path), 'r')['data']
             random_index = random.randint(0, datas.shape[0]-1)
             music_wav = torch.FloatTensor(datas[random_index])
             start = random.randint(0, music_wav.shape[-1] - self.segments)
-            ori_wav = music_wav[:, start:start+self.segments]
+            music_wav = music_wav[:, start:start+self.segments]
+            
+            rescale_snr = random.randint(self.snr_range[0], self.snr_range[1])
+            music_wav = music_wav * np.sqrt(10**(rescale_snr/10))
+            ori_wav.append(music_wav)
+        ori_wav = torch.stack(ori_wav).sum(0)
+        # else:
+        #     h5path = random.choice(os.listdir(os.path.join(self.data_dir, "mixture")))
+        #     datas = h5py.File(os.path.join(self.data_dir, "mixture", h5path), 'r')['data']
+        #     random_index = random.randint(0, datas.shape[0]-1)
+        #     music_wav = torch.FloatTensor(datas[random_index])
+        #     start = random.randint(0, music_wav.shape[-1] - self.segments)
+        #     ori_wav = music_wav[:, start:start+self.segments]
         
         codec_wav = codec_simu(ori_wav, sr=self.sr, options=self.codec_options)
         
