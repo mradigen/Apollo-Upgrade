@@ -79,17 +79,17 @@ class MusdbMoisesdbDataset(Dataset):
         self.num_samples = num_samples
         
         self.instruments = [
-            "bass", 
-            "bowed_strings", 
-            "drums", 
-            "guitar",
-            "other", 
-            "other_keys", 
-            "other_plucked", 
-            "percussion", 
-            "piano", 
+            # "bass", 
+            # "bowed_strings", 
+            # "drums", 
+            # "guitar",
+            # "other", 
+            # "other_keys", 
+            # "other_plucked", 
+            # "percussion", 
+            # "piano", 
             "vocals", 
-            "wind"
+            # "wind"
         ]
 
     def __len__(self) -> int:
