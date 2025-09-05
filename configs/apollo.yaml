@@ -21,7 +21,7 @@ datas:
   # num_samples: 40000
   # batch_size: 1
   num_samples: 1000
-  batch_size: 3
+  batch_size: 1
   num_workers: 8
 
 model:
