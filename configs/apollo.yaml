@@ -19,7 +19,7 @@ datas:
   num_stems: 8
   snr_range: [-10, 10]
   num_samples: 40000
-  batch_size: 1
+  batch_size: 2
   num_workers: 8
 
 model:
