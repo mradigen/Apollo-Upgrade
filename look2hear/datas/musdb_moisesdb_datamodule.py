@@ -67,6 +67,9 @@ class MusdbMoisesdbDataset(Dataset):
         num_stems: int = 4,
         snr_range: Tuple[int, int] = (-10, 10),
         num_samples: int = 1000,
+        # New arguments
+        split: str = "train",
+        seed: int | None = None,
     ) -> None:
         
         self.data_dir = data_dir
@@ -77,6 +80,10 @@ class MusdbMoisesdbDataset(Dataset):
         self.num_stems = num_stems
         self.snr_range = snr_range
         self.num_samples = num_samples
+        self.split = split.lower()
+        self.seed = seed
+        # dedicated RNG for reproducibility
+        self._rng = random.Random(seed)
         
         self.instruments = [
             "bass", 
@@ -92,32 +99,69 @@ class MusdbMoisesdbDataset(Dataset):
             # "wind"
         ]
 
+        # Pre-index available h5 files per instrument (and mixture) so that splits are deterministic.
+        # We assume directory layout: data_dir/<stem>/*.h5 and data_dir/mixture/*.h5
+        self._files_by_instrument: dict[str, list[str]] = {}
+        for stem in self.instruments + ["mixture"]:
+            stem_dir = os.path.join(self.data_dir, stem)
+            if not os.path.isdir(stem_dir):
+                self._files_by_instrument[stem] = []
+                continue
+            files = [f for f in os.listdir(stem_dir) if f.endswith('.h5')]
+            files.sort()  # deterministic ordering
+            if not files:
+                self._files_by_instrument[stem] = []
+                continue
+            # Simple 80/10/10 split
+            n = len(files)
+            train_end = max(1, int(0.8 * n))
+            val_end = max(train_end + 1, int(0.9 * n)) if n >= 3 else n
+            if self.split in ("train", "training"):
+                subset = files[:train_end]
+            elif self.split in ("val", "valid", "validation"):
+                subset = files[train_end:val_end]
+            elif self.split in ("test", "eval", "evaluation"):
+                subset = files[val_end:]
+            else:
+                # Unknown split label => use all
+                subset = files
+            # Fallback if subset empty (e.g., tiny dataset)
+            if not subset:
+                subset = files
+            self._files_by_instrument[stem] = subset
+
     def __len__(self) -> int:
         return self.num_samples
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        if random.random() > 0.5:
-            select_stems = random.randint(1, self.num_stems)
-            select_stems = random.choices(self.instruments, k=select_stems)
+        if self._rng.random() > 0.5:
+            select_stems = self._rng.randint(1, self.num_stems)
+            select_stems = [self._rng.choice(self.instruments) for _ in range(select_stems)]
             ori_wav = []
             for stem in select_stems:
-                h5path = random.choice(os.listdir(os.path.join(self.data_dir, stem)))
+                candidates = self._files_by_instrument.get(stem, [])
+                if not candidates:  # dynamic fallback
+                    candidates = [f for f in os.listdir(os.path.join(self.data_dir, stem)) if f.endswith('.h5')]
+                h5path = self._rng.choice(candidates)
                 datas = h5py.File(os.path.join(self.data_dir, stem, h5path), 'r')['data']
-                random_index = random.randint(0, datas.shape[0]-1)
+                random_index = self._rng.randint(0, datas.shape[0]-1)
                 music_wav = torch.FloatTensor(datas[random_index])
-                start = random.randint(0, music_wav.shape[-1] - self.segments)
+                start = self._rng.randint(0, music_wav.shape[-1] - self.segments)
                 music_wav = music_wav[:, start:start+self.segments]
                 
-                rescale_snr = random.randint(self.snr_range[0], self.snr_range[1])
+                rescale_snr = self._rng.randint(self.snr_range[0], self.snr_range[1])
                 music_wav = music_wav * np.sqrt(10**(rescale_snr/10))
                 ori_wav.append(music_wav)
             ori_wav = torch.stack(ori_wav).sum(0)
         else:
-            h5path = random.choice(os.listdir(os.path.join(self.data_dir, "mixture")))
+            candidates = self._files_by_instrument.get("mixture", [])
+            if not candidates:
+                candidates = [f for f in os.listdir(os.path.join(self.data_dir, "mixture")) if f.endswith('.h5')]
+            h5path = self._rng.choice(candidates)
             datas = h5py.File(os.path.join(self.data_dir, "mixture", h5path), 'r')['data']
-            random_index = random.randint(0, datas.shape[0]-1)
+            random_index = self._rng.randint(0, datas.shape[0]-1)
             music_wav = torch.FloatTensor(datas[random_index])
-            start = random.randint(0, music_wav.shape[-1] - self.segments)
+            start = self._rng.randint(0, music_wav.shape[-1] - self.segments)
             ori_wav = music_wav[:, start:start+self.segments]
         
         codec_wav = codec_simu(ori_wav, sr=self.sr, options=self.codec_options)
@@ -193,6 +237,8 @@ class MusdbMoisesdbDataModule(LightningDataModule):
                 num_stems=self.hparams.num_stems,
                 snr_range=self.hparams.snr_range,
                 num_samples=self.hparams.num_samples,
+                split="train",   # <---- important
+                seed=42,
             )
 
             # Determine if we have a valid eval directory
@@ -221,6 +267,8 @@ class MusdbMoisesdbDataModule(LightningDataModule):
                         num_stems=self.hparams.num_stems,
                         snr_range=self.hparams.snr_range,
                         num_samples=getattr(self.hparams, "val_num_samples", 16),
+                        split="val",   # <---- important
+                        seed=43,
                     )
                 else:
                     # As a last resort, reuse the full training dataset (not recommended but ensures validation runs)
