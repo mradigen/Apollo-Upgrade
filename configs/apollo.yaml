@@ -18,10 +18,10 @@ datas:
   segments: 3
   num_stems: 8
   snr_range: [-10, 10]
-  # num_samples: 40000
-  # batch_size: 1
-  num_samples: 400
+  num_samples: 40000
   batch_size: 3
+  # num_samples: 400
+  # batch_size: 3
   num_workers: 8
 
 model:
@@ -99,7 +99,7 @@ logger:
 trainer:
   _target_: pytorch_lightning.Trainer
   devices: [0,1]
-  max_epochs: 100
+  max_epochs: 500
   sync_batchnorm: true
   default_root_dir: ${exp.dir}/${exp.name}/
   accelerator: cuda
