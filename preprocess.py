@@ -97,7 +97,7 @@ def musdb_preprocess(train_root_dir, test_root_dir, output_dir,
         for track, files in all_data_dir.items()
     ]
 
-    n_workers = min(cpu_count(), 4)  # Kaggle usually gives 2–4 CPUs
+    n_workers = cpu_count()  # Kaggle usually gives 2–4 CPUs
     print(f"Using {n_workers} CPU workers...")
 
     # Outer progress bar (tracks)
