@@ -162,6 +162,9 @@ class MusdbMoisesdbDataModule(LightningDataModule):
         num_samples: int = 1000,
         batch_size: int = 32,
         num_workers: int = 4,
+        # New: allow using training data as validation when no eval set is provided
+        val_from_train: bool = True,
+        val_num_samples: int = 16,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(logger=False)
@@ -191,10 +194,37 @@ class MusdbMoisesdbDataModule(LightningDataModule):
                 snr_range=self.hparams.snr_range,
                 num_samples=self.hparams.num_samples,
             )
-            
-            self.data_val = MusdbMoisesdbEval(
-                data_dir=self.hparams.eval_dir
-            )
+
+            # Determine if we have a valid eval directory
+            eval_dir = getattr(self.hparams, "eval_dir", None)
+            has_eval = False
+            if isinstance(eval_dir, str) and os.path.isdir(eval_dir):
+                try:
+                    # any() short-circuits on first entry
+                    has_eval = any(os.scandir(eval_dir))
+                except Exception:
+                    has_eval = False
+
+            if has_eval:
+                self.data_val = MusdbMoisesdbEval(
+                    data_dir=eval_dir
+                )
+            else:
+                # Fallback: build a small validation set from the training data
+                if getattr(self.hparams, "val_from_train", True):
+                    self.data_val = MusdbMoisesdbDataset(
+                        data_dir=self.hparams.train_dir,
+                        codec_type=self.hparams.codec_type,
+                        codec_options=self.hparams.codec_options,
+                        sr=self.hparams.sr,
+                        segments=self.hparams.segments,
+                        num_stems=self.hparams.num_stems,
+                        snr_range=self.hparams.snr_range,
+                        num_samples=getattr(self.hparams, "val_num_samples", 16),
+                    )
+                else:
+                    # As a last resort, reuse the full training dataset (not recommended but ensures validation runs)
+                    self.data_val = self.data_train
     
     def train_dataloader(self) -> DataLoader:
         return DataLoader(

@@ -121,7 +121,18 @@ class AudioLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_nb):
         # cal val loss
-        ori_data, codec_data = batch
+        # Support (ori, codec) or (ori, codec, path)
+        if isinstance(batch, (list, tuple)):
+            if len(batch) == 3:
+                ori_data, codec_data, _ = batch
+            elif len(batch) == 2:
+                ori_data, codec_data = batch
+            else:
+                raise ValueError(f"Unexpected validation batch size: {len(batch)}")
+        else:
+            # Fallback for dict-like batches
+            ori_data = batch[0]
+            codec_data = batch[1]
         # print(mixtures.shape)
         est_sources = self(codec_data)
         loss = self.metrics(est_sources, ori_data)
@@ -143,6 +154,15 @@ class AudioLightningModule(pl.LightningModule):
         # val
         avg_loss = torch.stack(self.validation_step_outputs).mean()
         val_loss = torch.mean(self.all_gather(avg_loss))
+        # Ensure monitored metric exists at epoch end (for EarlyStopping)
+        self.log(
+            "val_loss",
+            val_loss,
+            on_epoch=True,
+            prog_bar=True,
+            sync_dist=True,
+            logger=True,
+        )
         self.log(
             "lr",
             self.optimizer[0].param_groups[0]["lr"],
