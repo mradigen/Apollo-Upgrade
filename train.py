@@ -105,7 +105,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     with open(os.path.join(cfg.exp.dir, cfg.exp.name, "best_k_models.json"), "w") as f:
         json.dump(best_k, f, indent=0)
 
-    state_dict = torch.load(checkpoint.best_model_path)
+    state_dict = torch.load(checkpoint.best_model_path, weights_only=False)
     system.load_state_dict(state_dict=state_dict["state_dict"])
     system.cpu()
 
