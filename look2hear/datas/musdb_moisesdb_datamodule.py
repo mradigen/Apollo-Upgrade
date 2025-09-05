@@ -100,14 +100,14 @@ class MusdbMoisesdbDataset(Dataset):
         ]
 
         # Pre-index available h5 files per instrument (and mixture) so that splits are deterministic.
-        # We assume directory layout: data_dir/<stem>/*.h5 and data_dir/mixture/*.h5
+        # We assume directory layout: data_dir/<stem>/*.hdf5 and data_dir/mixture/*.hdf5
         self._files_by_instrument: dict[str, list[str]] = {}
         for stem in self.instruments + ["mixture"]:
             stem_dir = os.path.join(self.data_dir, stem)
             if not os.path.isdir(stem_dir):
                 self._files_by_instrument[stem] = []
                 continue
-            files = [f for f in os.listdir(stem_dir) if f.endswith('.h5')]
+            files = [f for f in os.listdir(stem_dir) if f.endswith('.hdf5')]
             files.sort()  # deterministic ordering
             if not files:
                 self._files_by_instrument[stem] = []
@@ -141,7 +141,7 @@ class MusdbMoisesdbDataset(Dataset):
             for stem in select_stems:
                 candidates = self._files_by_instrument.get(stem, [])
                 if not candidates:  # dynamic fallback
-                    candidates = [f for f in os.listdir(os.path.join(self.data_dir, stem)) if f.endswith('.h5')]
+                    candidates = [f for f in os.listdir(os.path.join(self.data_dir, stem)) if f.endswith('.hdf5')]
                 h5path = self._rng.choice(candidates)
                 datas = h5py.File(os.path.join(self.data_dir, stem, h5path), 'r')['data']
                 random_index = self._rng.randint(0, datas.shape[0]-1)
@@ -156,7 +156,7 @@ class MusdbMoisesdbDataset(Dataset):
         else:
             candidates = self._files_by_instrument.get("mixture", [])
             if not candidates:
-                candidates = [f for f in os.listdir(os.path.join(self.data_dir, "mixture")) if f.endswith('.h5')]
+                candidates = [f for f in os.listdir(os.path.join(self.data_dir, "mixture")) if f.endswith('.hdf5')]
             h5path = self._rng.choice(candidates)
             datas = h5py.File(os.path.join(self.data_dir, "mixture", h5path), 'r')['data']
             random_index = self._rng.randint(0, datas.shape[0]-1)
