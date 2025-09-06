@@ -7,6 +7,7 @@
 import json
 from typing import Any, Dict, List, Optional, Tuple
 import os
+import glob
 from omegaconf import OmegaConf
 import argparse
 import pytorch_lightning as pl
@@ -24,6 +25,49 @@ from look2hear.utils import RankedLogger, instantiate, print_only
 import warnings
 warnings.filterwarnings("ignore")
 
+
+
+def _find_resume_checkpoint(exp_dir: str) -> Optional[str]:
+    """Try to locate a suitable checkpoint to resume from.
+
+    Priority order:
+    1. best_k_models.json (first key assumed best)
+    2. checkpoint containing 'best'
+    3. checkpoint containing 'last'
+    4. most recently modified .ckpt file
+    """
+    # 1. Use recorded best_k_models.json if it exists
+    best_json = os.path.join(exp_dir, "best_k_models.json")
+    if os.path.isfile(best_json):
+        try:
+            with open(best_json) as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data:
+                # keys are checkpoint paths
+                # choose the one with best value depending on min/max not stored; assume first is best
+                # but safer: pick key whose file exists
+                existing = [k for k in data.keys() if os.path.isfile(k)]
+                if existing:
+                    return existing[0]
+        except Exception:
+            pass
+
+    # 2-4. Scan checkpoints directory
+    ckpt_dir = os.path.join(exp_dir, "checkpoints")
+    if not os.path.isdir(ckpt_dir):
+        return None
+    ckpts = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
+    if not ckpts:
+        return None
+    # prefer filenames containing 'best'
+    best = [c for c in ckpts if "best" in os.path.basename(c).lower()]
+    if best:
+        return best[0]
+    last = [c for c in ckpts if "last" in os.path.basename(c).lower()]
+    if last:
+        return last[0]
+    # fallback: newest by mtime
+    return max(ckpts, key=os.path.getmtime)
 
 
 def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
@@ -99,7 +143,17 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         strategy=DDPStrategy(find_unused_parameters=True),
     )
     
-    trainer.fit(system, datamodule=datamodule)
+    # Auto-resume logic
+    ckpt_path = None
+    if getattr(cfg, "resume", True):
+        exp_dir = os.path.join(cfg.exp.dir, cfg.exp.name)
+        ckpt_path = _find_resume_checkpoint(exp_dir)
+        if ckpt_path:
+            print_only(f"Resuming training from checkpoint: {ckpt_path}")
+        else:
+            print_only("No existing checkpoint found. Starting fresh training.")
+
+    trainer.fit(system, datamodule=datamodule, ckpt_path=ckpt_path)
     print_only("Training finished!")
     best_k = {k: v.item() for k, v in checkpoint.best_k_models.items()}
     with open(os.path.join(cfg.exp.dir, cfg.exp.name, "best_k_models.json"), "w") as f:
@@ -117,20 +171,26 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         wandb.finish()
 
 if __name__ == "__main__":
-    
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--conf_dir",
         default="local/conf.yml",
-        help="Full path to save best validation model",
+        help="Path to experiment config file",
     )
-    
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Disable auto-resume from last/best checkpoint (enabled by default)",
+    )
     args = parser.parse_args()
+
     cfg = OmegaConf.load(args.conf_dir)
-    
+    # Inject resume flag (default True unless --no-resume passed)
+    cfg.resume = not args.no_resume
+
     os.makedirs(os.path.join(cfg.exp.dir, cfg.exp.name), exist_ok=True)
-    # 保存配置到新的文件
+    # Save (possibly updated) config to experiment folder
     OmegaConf.save(cfg, os.path.join(cfg.exp.dir, cfg.exp.name, "config.yaml"))
-    
+
     train(cfg)
     
