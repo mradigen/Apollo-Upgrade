@@ -25,7 +25,7 @@ def main(input_wav, output_wav, use_random=False):
         ).cuda()
     else:
         model = look2hear.models.BaseModel.from_pretrain(
-            "/tmp/prism/Apollo-Upgrade/Model",
+            "Model",
             sr=44100,
             win=20,
             feature_dim=int(os.getenv("A_FEATURE_DIM", 256)),
