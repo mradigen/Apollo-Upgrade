@@ -128,6 +128,37 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         print_only(f"Instantiating checkpoint <{cfg.checkpoint._target_}>")
         checkpoint: pl.callbacks.ModelCheckpoint = hydra.utils.instantiate(cfg.checkpoint)
         callbacks.append(checkpoint)
+
+    # Callback to persist best_k_models.json after every validation so mid-run interruption keeps latest info
+    class BestKModelsWriter(pl.Callback):
+        def __init__(self, ckpt_cb: Optional[pl.callbacks.ModelCheckpoint], out_dir: str):
+            self.ckpt_cb = ckpt_cb
+            self.out_path = os.path.join(out_dir, "best_k_models.json")
+
+        def _write(self):
+            if not self.ckpt_cb:
+                return
+            # best_k_models maps path -> metric tensor
+            try:
+                best_k = {k: (v.item() if hasattr(v, "item") else float(v)) for k, v in self.ckpt_cb.best_k_models.items()}
+            except Exception:
+                # Fallback: cast directly
+                best_k = {k: float(v) for k, v in getattr(self.ckpt_cb, "best_k_models", {}).items()}
+            os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
+            with open(self.out_path, "w") as f:
+                json.dump(best_k, f, indent=0)
+
+        def on_validation_end(self, trainer, pl_module):  # after each validation epoch
+            if getattr(trainer, "is_global_zero", True):
+                self._write()
+
+        def on_train_end(self, trainer, pl_module):  # final safeguard
+            if getattr(trainer, "is_global_zero", True):
+                self._write()
+
+    # Always add writer (only acts if checkpoint callback present)
+    callbacks.append(BestKModelsWriter(checkpoint if 'checkpoint' in locals() else None,
+                                       os.path.join(cfg.exp.dir, cfg.exp.name)))
         
     # instantiate logger
     print_only(f"Instantiating logger <{cfg.logger._target_}>")
