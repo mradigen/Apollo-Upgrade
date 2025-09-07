@@ -5,6 +5,7 @@
 # LastEditTime: 2024-01-24 00:05:10
 ###
 import json
+import shutil
 from typing import Any, Dict, List, Optional, Tuple
 import os
 import glob
@@ -28,51 +29,77 @@ warnings.filterwarnings("ignore")
 
 
 def _find_resume_checkpoint(exp_dir: str) -> Optional[str]:
-    """Locate checkpoint to resume training.
+    """Locate the checkpoint we should resume from.
 
-    New priority order (explicit requirement):
-    1. checkpoints/last.ckpt (exact file) -> always preferred for resuming
-    2. Any checkpoint containing 'last' (e.g. last-v2.ckpt) – pick most recent by mtime
-    3. Fallback: previous heuristic (best_k_models.json, then 'best', then newest)
+    Rules (in order):
+    1. If ``best_model_checkpoint.pth`` (a copied "best" .ckpt) exists, use it.
+    2. Use ``best_k_models.json`` selecting the true best according to saved metric values.
+    3. Otherwise, pick the *best* .ckpt inside ``checkpoints/`` by parsing metric from filename
+       (supports pattern ``val_loss=...``) or presence of "best" in name.
+    4. Fallback to ``last*.ckpt`` then most recent .ckpt by modification time.
     """
-    ckpt_dir = os.path.join(exp_dir, "checkpoints")
-    last_exact = os.path.join(ckpt_dir, "last.ckpt")
-    if os.path.isfile(last_exact):
-        return last_exact
 
-    # Collect all checkpoints first (may need for later steps)
-    ckpts = []
-    if os.path.isdir(ckpt_dir):
-        ckpts = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
+    # 1. Stable copied best checkpoint
+    stable_best = os.path.join(exp_dir, "best_model_checkpoint.pth")
+    if os.path.isfile(stable_best):
+        return stable_best
 
-    # 2. Any other 'last' variant (e.g., last-v1.ckpt, last-v2.ckpt) – choose most recent
-    last_variants = [c for c in ckpts if os.path.basename(c).lower().startswith("last")]
-    if last_variants:
-        return max(last_variants, key=os.path.getmtime)
+    mode = "min"
 
-    # 3. Previous heuristic (kept for robustness) -------------------------
-    # Use recorded best_k_models.json if it exists (only if no 'last' found)
+    # 2. best_k_models.json
     best_json = os.path.join(exp_dir, "best_k_models.json")
     if os.path.isfile(best_json):
         try:
             with open(best_json) as f:
                 data = json.load(f)
             if isinstance(data, dict) and data:
-                existing = [k for k in data.keys() if os.path.isfile(k)]
-                if existing:
-                    return existing[0]
+                # filter existing
+                items = [(p, v) for p, v in data.items() if os.path.isfile(p)]
+                if items:
+                    # choose best based on mode
+                    reverse = mode == "max"
+                    items.sort(key=lambda x: x[1], reverse=reverse)
+                    return items[0][0]
         except Exception:
             pass
 
+    # 3. Scan checkpoints directory and infer best
+    ckpt_dir = os.path.join(exp_dir, "checkpoints")
+    if not os.path.isdir(ckpt_dir):
+        return None
+    ckpts = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
     if not ckpts:
         return None
 
-    # prefer filenames containing 'best'
-    best = [c for c in ckpts if "best" in os.path.basename(c).lower()]
-    if best:
-        return best[0]
+    # Prefer explicit 'best'
+    best_named = [c for c in ckpts if "best" in os.path.basename(c).lower()]
+    if best_named:
+        # if multiple, pick newest
+        return max(best_named, key=os.path.getmtime)
 
-    # fallback: newest by mtime
+    # Parse metric from filename pattern epoch=E-val_loss=VAL.ckpt
+    parsed = []  # (path, metric value)
+    for c in ckpts:
+        base = os.path.basename(c)
+        if "val_loss=" in base:
+            try:
+                part = base.split("val_loss=")[1]
+                num_str = part.split(".ckpt")[0]
+                value = float(num_str)
+                parsed.append((c, value))
+            except Exception:
+                continue
+    if parsed:
+        reverse = mode == "max"
+        parsed.sort(key=lambda x: x[1], reverse=reverse)
+        return parsed[0][0]
+
+    # 4. last*.ckpt
+    last = [c for c in ckpts if "last" in os.path.basename(c).lower()]
+    if last:
+        return max(last, key=os.path.getmtime)
+
+    # Fallback newest by mtime
     return max(ckpts, key=os.path.getmtime)
 
 
@@ -140,6 +167,7 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         def __init__(self, ckpt_cb: Optional[pl.callbacks.ModelCheckpoint], out_dir: str):
             self.ckpt_cb = ckpt_cb
             self.out_path = os.path.join(out_dir, "best_k_models.json")
+            self.best_copy_path = os.path.join(out_dir, "best_model_checkpoint.pth")
 
         def _write(self):
             if not self.ckpt_cb:
@@ -153,6 +181,20 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
             os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
             with open(self.out_path, "w") as f:
                 json.dump(best_k, f, indent=0)
+            # Also maintain a stable copy/symlink of current best checkpoint for easy resume
+            if best_k:
+                # Determine current best according to callback's mode
+                mode = getattr(self.ckpt_cb, "mode", "min")
+                reverse = mode == "max"
+                items = sorted(best_k.items(), key=lambda x: x[1], reverse=reverse)
+                best_path = items[0][0]
+                if os.path.isfile(best_path):
+                    try:
+                        # Copy only if different (by name)
+                        if not os.path.exists(self.best_copy_path) or os.path.getmtime(best_path) > os.path.getmtime(self.best_copy_path):
+                            shutil.copy2(best_path, self.best_copy_path)
+                    except Exception:
+                        pass
 
         def on_validation_end(self, trainer, pl_module):  # after each validation epoch
             if getattr(trainer, "is_global_zero", True):
