@@ -27,46 +27,80 @@ warnings.filterwarnings("ignore")
 
 
 
-def _find_resume_checkpoint(exp_dir: str) -> Optional[str]:
-    """Try to locate a suitable checkpoint to resume from.
+def _find_resume_checkpoint(exp_dir: str, monitor_mode: Optional[str] = "min") -> Optional[str]:
+    """Locate a suitable checkpoint to resume from.
 
     Priority order:
-    1. best_k_models.json (first key assumed best)
-    2. checkpoint containing 'best'
-    3. checkpoint containing 'last'
-    4. most recently modified .ckpt file
+    1. best_k_models.json (choose truly best based on monitor_mode)
+    2. checkpoint filename containing 'best'
+    3. checkpoint filename containing 'last'
+    4. checkpoint with highest epoch number (epoch=E-...) if parsable
+    5. most recently modified .ckpt file
     """
-    # 1. Use recorded best_k_models.json if it exists
+    def _select_best(d: Dict[str, float]) -> Optional[str]:
+        if not d:
+            return None
+        # mode 'min' => smallest metric; 'max' => largest
+        reverse = (monitor_mode == "max")
+        # sorted returns list of tuples (path, metric)
+        sorted_items = sorted(d.items(), key=lambda kv: kv[1], reverse=reverse)
+        for path, _ in sorted_items:
+            if os.path.isfile(path):
+                return path
+        return None
+
     best_json = os.path.join(exp_dir, "best_k_models.json")
     if os.path.isfile(best_json):
         try:
             with open(best_json) as f:
                 data = json.load(f)
-            if isinstance(data, dict) and data:
-                # keys are checkpoint paths
-                # choose the one with best value depending on min/max not stored; assume first is best
-                # but safer: pick key whose file exists
-                existing = [k for k in data.keys() if os.path.isfile(k)]
-                if existing:
-                    return existing[0]
+            if isinstance(data, dict):
+                # ensure float conversion
+                parsed = {}
+                for k, v in data.items():
+                    try:
+                        parsed[k] = float(v)
+                    except Exception:
+                        continue
+                chosen = _select_best(parsed)
+                if chosen:
+                    return chosen
         except Exception:
             pass
 
-    # 2-4. Scan checkpoints directory
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     if not os.path.isdir(ckpt_dir):
         return None
     ckpts = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
     if not ckpts:
         return None
-    # prefer filenames containing 'best'
+
+    # Prefer names containing 'best'
     best = [c for c in ckpts if "best" in os.path.basename(c).lower()]
     if best:
         return best[0]
     last = [c for c in ckpts if "last" in os.path.basename(c).lower()]
     if last:
         return last[0]
-    # fallback: newest by mtime
+
+    # Try to parse epoch numbers: pattern epoch=E-
+    def _epoch_num(path: str) -> Optional[int]:
+        base = os.path.basename(path)
+        if "epoch=" in base:
+            try:
+                seg = base.split("epoch=")[1]
+                num = seg.split("-")[0]
+                return int(num)
+            except Exception:
+                return None
+        return None
+    with_epochs = [(c, _epoch_num(c)) for c in ckpts]
+    valid_epochs = [c for c, e in with_epochs if e is not None]
+    if valid_epochs:
+        # pick highest epoch
+        return max(valid_epochs, key=lambda p: _epoch_num(p))
+
+    # Fallback: newest by mtime
     return max(ckpts, key=os.path.getmtime)
 
 
@@ -159,6 +193,58 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     # Always add writer (only acts if checkpoint callback present)
     callbacks.append(BestKModelsWriter(checkpoint if 'checkpoint' in locals() else None,
                                        os.path.join(cfg.exp.dir, cfg.exp.name)))
+
+    # Callback to export serialized audio model whenever a new best checkpoint is achieved
+    class ExportBestSerialized(pl.Callback):
+        def __init__(self, ckpt_cb: Optional[pl.callbacks.ModelCheckpoint], out_dir: str, monitor_mode: str = "min"):
+            self.ckpt_cb = ckpt_cb
+            self.out_dir = out_dir
+            self.monitor_mode = monitor_mode
+            self.best_metric: Optional[float] = None
+
+        def _is_improvement(self, current: float) -> bool:
+            if self.best_metric is None:
+                return True
+            if self.monitor_mode == "min":
+                return current < self.best_metric
+            return current > self.best_metric
+
+        def on_validation_end(self, trainer, pl_module):
+            if not self.ckpt_cb:
+                return
+            if not getattr(trainer, "is_global_zero", True):
+                return
+            # Determine current best metric from callback
+            try:
+                # best_model_score is a tensor
+                score = self.ckpt_cb.best_model_score
+                if score is None:
+                    return
+                metric_val = float(score.item() if hasattr(score, "item") else score)
+            except Exception:
+                return
+            if self._is_improvement(metric_val):
+                # Update best and export
+                self.best_metric = metric_val
+                try:
+                    # Load the best checkpoint path's state dict to ensure consistent export
+                    best_path = self.ckpt_cb.best_model_path
+                    if best_path and os.path.isfile(best_path):
+                        state_dict = torch.load(best_path, weights_only=False)
+                        # Temporarily move to CPU for serialization if needed
+                        pl_module.load_state_dict(state_dict['state_dict'])
+                        pl_module.cpu()
+                        serialized = pl_module.audio_model.serialize()
+                        out_file = os.path.join(self.out_dir, "best_model_checkpoint.pth")
+                        torch.save(serialized, out_file)
+                        print_only(f"Exported new best serialized model to {out_file} (metric={metric_val:.6f})")
+                except Exception as e:
+                    print_only(f"Failed to export best model: {e}")
+
+    monitor_mode = getattr(cfg.checkpoint, 'mode', 'min') if cfg.get('checkpoint') else 'min'
+    callbacks.append(ExportBestSerialized(checkpoint if 'checkpoint' in locals() else None,
+                                          os.path.join(cfg.exp.dir, cfg.exp.name),
+                                          monitor_mode))
         
     # instantiate logger
     print_only(f"Instantiating logger <{cfg.logger._target_}>")
@@ -178,7 +264,10 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     ckpt_path = None
     if getattr(cfg, "resume", True):
         exp_dir = os.path.join(cfg.exp.dir, cfg.exp.name)
-        ckpt_path = _find_resume_checkpoint(exp_dir)
+        monitor_mode = None
+        if cfg.get("checkpoint") and hasattr(cfg.checkpoint, "mode"):
+            monitor_mode = cfg.checkpoint.mode
+        ckpt_path = _find_resume_checkpoint(exp_dir, monitor_mode=monitor_mode)
         if ckpt_path:
             print_only(f"Resuming training from checkpoint: {ckpt_path}")
         else:
@@ -224,4 +313,4 @@ if __name__ == "__main__":
     OmegaConf.save(cfg, os.path.join(cfg.exp.dir, cfg.exp.name, "config.yaml"))
 
     train(cfg)
-    
+
