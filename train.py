@@ -27,46 +27,38 @@ warnings.filterwarnings("ignore")
 
 
 
-def _find_resume_checkpoint(exp_dir: str, monitor_mode: Optional[str] = "min") -> Optional[str]:
-    """Locate a suitable checkpoint to resume from.
+def _find_resume_checkpoint(
+    exp_dir: str,
+    monitor_mode: Optional[str] = "min",
+    preference: str = "auto",
+) -> Optional[str]:
+    """Locate a suitable checkpoint to resume from with robust heuristics.
 
-    Priority order:
-    1. best_k_models.json (choose truly best based on monitor_mode)
-    2. checkpoint filename containing 'best'
-    3. checkpoint filename containing 'last'
-    4. checkpoint with highest epoch number (epoch=E-...) if parsable
-    5. most recently modified .ckpt file
+    preference:
+      - 'auto' (default): favor newest last*.ckpt for continuity; use best only if clearly newer.
+      - 'last': force newest last*.ckpt.
+      - 'best': force best according to metric (best_k_models.json or *best* filename).
+
+    Strategy order (auto):
+      1. Scan checkpoints.
+      2. Identify newest last*.ckpt (continuity candidate).
+      3. If best_k_models.json exists and references existing paths, compute best metric.
+         Use it only if no last exists or best is newer/equal mtime.
+      4. Else fallback to newest last*.ckpt.
+      5. Else explicit *best* filenames.
+      6. Else highest epoch=E-... number.
+      7. Else newest by mtime.
     """
+
     def _select_best(d: Dict[str, float]) -> Optional[str]:
         if not d:
             return None
-        # mode 'min' => smallest metric; 'max' => largest
         reverse = (monitor_mode == "max")
-        # sorted returns list of tuples (path, metric)
         sorted_items = sorted(d.items(), key=lambda kv: kv[1], reverse=reverse)
         for path, _ in sorted_items:
             if os.path.isfile(path):
                 return path
         return None
-
-    best_json = os.path.join(exp_dir, "best_k_models.json")
-    if os.path.isfile(best_json):
-        try:
-            with open(best_json) as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                # ensure float conversion
-                parsed = {}
-                for k, v in data.items():
-                    try:
-                        parsed[k] = float(v)
-                    except Exception:
-                        continue
-                chosen = _select_best(parsed)
-                if chosen:
-                    return chosen
-        except Exception:
-            pass
 
     ckpt_dir = os.path.join(exp_dir, "checkpoints")
     if not os.path.isdir(ckpt_dir):
@@ -75,15 +67,55 @@ def _find_resume_checkpoint(exp_dir: str, monitor_mode: Optional[str] = "min") -
     if not ckpts:
         return None
 
-    # Prefer names containing 'best'
-    best = [c for c in ckpts if "best" in os.path.basename(c).lower()]
-    if best:
-        return best[0]
-    last = [c for c in ckpts if "last" in os.path.basename(c).lower()]
-    if last:
-        return last[0]
+    def _is_last(name: str) -> bool:
+        base = os.path.basename(name).lower()
+        return base.startswith("last") or base == "last.ckpt"
 
-    # Try to parse epoch numbers: pattern epoch=E-
+    last_ckpts = [c for c in ckpts if _is_last(c)]
+    newest_last = max(last_ckpts, key=os.path.getmtime) if last_ckpts else None
+
+    best_json = os.path.join(exp_dir, "best_k_models.json")
+    best_from_json = None
+    if os.path.isfile(best_json):
+        try:
+            with open(best_json) as f:
+                data = json.load(f)
+            if isinstance(data, dict) and data:
+                parsed = {}
+                for k, v in data.items():
+                    if os.path.isfile(k):
+                        try:
+                            parsed[k] = float(v)
+                        except Exception:
+                            continue
+                best_from_json = _select_best(parsed)
+        except Exception:
+            best_from_json = None
+
+    # preference handling shortcuts
+    if preference == "last" and newest_last:
+        return newest_last
+    if preference == "best" and best_from_json:
+        return best_from_json
+
+    # auto logic
+    if preference == "auto":
+        if best_from_json and newest_last:
+            # compare mtimes; pick best only if its file is not older (avoid rewinding)
+            if os.path.getmtime(best_from_json) >= os.path.getmtime(newest_last):
+                return best_from_json
+            return newest_last
+        if best_from_json:
+            return best_from_json
+        if newest_last:
+            return newest_last
+
+    # Named best ckpts (rare if not using explicit naming)
+    best_named = [c for c in ckpts if "best" in os.path.basename(c).lower()]
+    if best_named:
+        return max(best_named, key=os.path.getmtime)
+
+    # Try epoch pattern
     def _epoch_num(path: str) -> Optional[int]:
         base = os.path.basename(path)
         if "epoch=" in base:
@@ -97,10 +129,8 @@ def _find_resume_checkpoint(exp_dir: str, monitor_mode: Optional[str] = "min") -
     with_epochs = [(c, _epoch_num(c)) for c in ckpts]
     valid_epochs = [c for c, e in with_epochs if e is not None]
     if valid_epochs:
-        # pick highest epoch
         return max(valid_epochs, key=lambda p: _epoch_num(p))
 
-    # Fallback: newest by mtime
     return max(ckpts, key=os.path.getmtime)
 
 
@@ -267,7 +297,8 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         monitor_mode = None
         if cfg.get("checkpoint") and hasattr(cfg.checkpoint, "mode"):
             monitor_mode = cfg.checkpoint.mode
-        ckpt_path = _find_resume_checkpoint(exp_dir, monitor_mode=monitor_mode)
+        preference = getattr(cfg, "resume_preference", "auto")
+        ckpt_path = _find_resume_checkpoint(exp_dir, monitor_mode=monitor_mode, preference=preference)
         if ckpt_path:
             print_only(f"Resuming training from checkpoint: {ckpt_path}")
         else:
