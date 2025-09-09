@@ -5,3 +5,4 @@ asserts
 *.mp3
 *.opus
 *.wav
+!codec.wav
