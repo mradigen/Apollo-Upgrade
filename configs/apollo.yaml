@@ -2,7 +2,7 @@ exp:
   dir: ./Exps
   name: Apollo
 
-# seed: 614020
+seed: 614020
 
 datas:
   _target_: look2hear.datas.MusdbMoisesdbDataModule
@@ -18,7 +18,7 @@ datas:
   segments: 3
   num_stems: 8
   snr_range: [-10, 10]
-  num_samples: 8000
+  num_samples: 20000
   batch_size: 16
   # num_samples: 400
   # batch_size: 3
@@ -99,7 +99,7 @@ logger:
 trainer:
   _target_: pytorch_lightning.Trainer
   devices: [0,1]
-  max_epochs: 100
+  max_epochs: 300
   sync_batchnorm: true
   default_root_dir: ${exp.dir}/${exp.name}/
   accelerator: cuda

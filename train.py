@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore")
 
 def _find_resume_checkpoint(exp_dir: str) -> Optional[str]:
 
-    return "/home/prism/Apollo-Upgrade/Exps/Apollo/checkpoints/epoch=165-val_loss=-18.0394.ckpt"
+    # return "/home/prism/Apollo-Upgrade/Exps/Apollo/checkpoints/epoch=165-val_loss=-18.0394.ckpt"
     """Try to locate a suitable checkpoint to resume from.
 
     Priority order:
