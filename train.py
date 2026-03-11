@@ -29,7 +29,6 @@ warnings.filterwarnings("ignore")
 
 def _find_resume_checkpoint(exp_dir: str) -> Optional[str]:
 
-    # return "/home/prism/Apollo-Upgrade/Exps/Apollo/checkpoints/epoch=165-val_loss=-18.0394.ckpt"
     """Try to locate a suitable checkpoint to resume from.
 
     Priority order:
@@ -169,11 +168,15 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     
     # instantiate trainer
     print_only(f"Instantiating trainer <{cfg.trainer._target_}>")
+    if isinstance(cfg.trainer.devices, (list, tuple)) and len(cfg.trainer.devices) > 1:
+        strategy = DDPStrategy(find_unused_parameters=True)
+    else:
+        strategy = "auto"
     trainer: Trainer = hydra.utils.instantiate(
         cfg.trainer,
         callbacks=callbacks,
         logger=logger,
-        strategy=DDPStrategy(find_unused_parameters=True),
+        strategy=strategy,
     )
     
     # Auto-resume logic

@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,7 +47,105 @@ class RMVN(nn.Module):
         input_norm = input_norm.reshape(B, N, T) * self.std.reshape(1, -1, 1) + self.mean.reshape(1, -1, 1)
 
         return input_norm.reshape(input.shape)
-    
+
+class SelectiveSSM(nn.Module):
+    def __init__(self, d_inner, d_state=16, dt_rank=None):
+        super().__init__()
+        self.d_inner = d_inner
+        self.d_state = d_state
+        self.dt_rank = dt_rank or math.ceil(d_inner / 16)
+
+        A = torch.arange(1, d_state + 1).float().repeat(d_inner, 1)
+        self.A_log = nn.Parameter(torch.log(A))
+        self.D = nn.Parameter(torch.ones(d_inner))
+        self.x_proj = nn.Linear(d_inner, self.dt_rank + 2 * d_state, bias=False)
+        self.dt_proj = nn.Linear(self.dt_rank, d_inner, bias=True)
+
+        # Init dt_proj bias per Mamba reference: inv_softplus(uniform(dt_min, dt_max))
+        dt_min, dt_max = 0.001, 0.1
+        dt_init = torch.rand(d_inner) * (dt_max - dt_min) + dt_min
+        self.dt_proj.bias.data = torch.log(torch.exp(dt_init) - 1)  # inv_softplus
+
+    def forward(self, x):
+        # x: (B, d_inner, L)
+        x_perm = x.permute(0, 2, 1)  # (B, L, d_inner)
+        proj = self.x_proj(x_perm)  # (B, L, dt_rank + 2*d_state)
+        dt_raw, B_ssm, C_ssm = torch.split(proj, [self.dt_rank, self.d_state, self.d_state], dim=-1)
+
+        dt = F.softplus(self.dt_proj(dt_raw))  # (B, L, d_inner)
+        A = -torch.exp(self.A_log)  # (d_inner, d_state)
+
+        # Shapes: dt (B,L,d_inner), A (d_inner,d_state), B_ssm (B,L,d_state), x (B,d_inner,L)
+        # Target layout: (B, d_inner, L, d_state)
+        dt_4d = dt.permute(0, 2, 1).unsqueeze(-1)  # (B, d_inner, L, 1)
+        A_4d = A.reshape(1, self.d_inner, 1, self.d_state)  # (1, d_inner, 1, d_state)
+        B_4d = B_ssm.unsqueeze(1)  # (B, 1, L, d_state)
+        x_4d = x.unsqueeze(-1)  # (B, d_inner, L, 1)
+
+        log_A_bar = dt_4d * A_4d  # (B, d_inner, L, d_state)
+        Bu = (dt_4d * B_4d) * x_4d  # (B, d_inner, L, d_state)
+
+        # Parallel scan: h[t] = exp(cumsum_A[t]) * cumsum(exp(-cumsum_A) * Bu)
+        log_A_cumsum = torch.cumsum(log_A_bar, dim=2)  # (B, d_inner, L, d_state)
+        h = torch.exp(log_A_cumsum) * torch.cumsum(torch.exp(-log_A_cumsum) * Bu, dim=2)
+
+        # y[t] = C[t] . h[t], sum over d_state
+        C_4d = C_ssm.unsqueeze(1)  # (B, 1, L, d_state)
+        y = (h * C_4d).sum(-1)  # (B, d_inner, L)
+
+        return y + self.D.unsqueeze(0).unsqueeze(-1) * x
+
+class MambaBlock(nn.Module):
+    def __init__(self, d_model, expand=2, d_state=16, d_conv=4):
+        super().__init__()
+        d_inner = d_model * expand
+        self.norm = RMSNorm(d_model)
+        self.in_proj = nn.Conv1d(d_model, 2 * d_inner, 1)
+        self.conv1d = nn.Conv1d(d_inner, d_inner, d_conv, padding=d_conv - 1, groups=d_inner)
+        self.ssm = SelectiveSSM(d_inner, d_state)
+        self.out_proj = nn.Conv1d(d_inner, d_model, 1)
+
+    def forward(self, x):
+        # x: (B, d_model, L)
+        residual = x
+        x = self.norm(x)
+        xz = self.in_proj(x)
+        x_path, z = xz.chunk(2, dim=1)
+        x_path = self.conv1d(x_path)[..., :x.shape[-1]]
+        x_path = F.silu(x_path)
+        x_path = self.ssm(x_path)
+        return self.out_proj(x_path * F.silu(z)) + residual
+
+class BiMambaBlock(nn.Module):
+    def __init__(self, d_model, expand=2, d_state=16, d_conv=4):
+        super().__init__()
+        self.fwd = MambaBlock(d_model, expand, d_state, d_conv)
+        self.bwd = MambaBlock(d_model, expand, d_state, d_conv)
+
+    def forward(self, x):
+        # x: (B, d_model, L)
+        return 0.5 * (self.fwd(x) + self.bwd(x.flip(-1)).flip(-1))
+
+class MambaBSNet(nn.Module):
+    def __init__(self, feature_dim, expand=2, d_state=16, d_conv=4):
+        super().__init__()
+        self.band_net = BiMambaBlock(feature_dim, expand, d_state, d_conv)
+        self.seq_net = MambaBlock(feature_dim, expand, d_state, d_conv)
+
+    def forward(self, input):
+        # input: (B, nband, N, T)
+        B, nband, N, T = input.shape
+
+        # band communication
+        band_input = input.permute(0, 3, 2, 1).reshape(B * T, N, nband)
+        band_output = self.band_net(band_input)
+        band_output = band_output.reshape(B, T, N, nband).permute(0, 3, 2, 1)
+
+        # sequence modeling
+        output = self.seq_net(band_output.reshape(B * nband, N, T)).reshape(B, nband, N, T)
+
+        return output
+
 class Roformer(nn.Module):
     """
     Transformer with rotary positional embedding.
@@ -237,9 +336,17 @@ class Apollo(BaseModel):
                                          nn.Conv1d(self.band_width[i]*2+1, self.feature_dim, 1))
                           )
 
+        use_mamba = bool(int(os.getenv("A_USE_MAMBA", 0)))
+        mamba_expand = int(os.getenv("A_MAMBA_EXPAND", 2))
+        mamba_d_state = int(os.getenv("A_MAMBA_DSTATE", 16))
+        mamba_d_conv = int(os.getenv("A_MAMBA_DCONV", 4))
+
         self.net = []
         for _ in range(layer):
-            self.net.append(BSNet(self.feature_dim))
+            if use_mamba:
+                self.net.append(MambaBSNet(self.feature_dim, mamba_expand, mamba_d_state, mamba_d_conv))
+            else:
+                self.net.append(BSNet(self.feature_dim))
         self.net = nn.Sequential(*self.net)
         
         self.output = nn.ModuleList([])

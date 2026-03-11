@@ -13,7 +13,7 @@ def save_audio(file_path, audio, samplerate=44100):
     audio = audio.squeeze(0).cpu()
     torchaudio.save(file_path, audio, samplerate)
 
-def main(input_wav, output_wav, use_random=False):
+def main(input_wav, output_wav, model_path="Exps/Apollo/best_model.pth", use_random=False):
     os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 
     if use_random:
@@ -25,8 +25,7 @@ def main(input_wav, output_wav, use_random=False):
         ).cuda()
     else:
         model = look2hear.models.BaseModel.from_pretrain(
-            # "Model",
-            "Exps/Apollo/best_model.pth",
+            model_path,
             sr=44100,
             win=20,
             feature_dim=int(os.getenv("A_FEATURE_DIM", 256)),
@@ -54,7 +53,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Inference Script")
     parser.add_argument("--in_wav", type=str, required=True, help="Path to input wav file")
     parser.add_argument("--out_wav", type=str, required=True, help="Path to output wav file")
+    parser.add_argument("--model_path", type=str, default="Exps/Apollo/best_model.pth", help="Path to pretrained model")
     parser.add_argument("--random", action="store_true", help="Use randomly initialized Apollo instead of pretrained model")
     args = parser.parse_args()
 
-    main(args.in_wav, args.out_wav, use_random=args.random)
+    main(args.in_wav, args.out_wav, model_path=args.model_path, use_random=args.random)
