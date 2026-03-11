@@ -376,7 +376,9 @@ class Apollo(BaseModel):
 
         B, nch, nsample = input.shape
 
-        spec = torch.stft(input.view(B*nch, nsample), n_fft=self.win, hop_length=self.stride, 
+        # Force fp32 for STFT — cuFFT requires power-of-2 sizes for fp16
+        input_f32 = input.view(B*nch, nsample).float()
+        spec = torch.stft(input_f32, n_fft=self.win, hop_length=self.stride,
                           window=torch.hann_window(self.win).to(input.device), return_complex=True)
 
         subband_spec = []
@@ -418,7 +420,8 @@ class Apollo(BaseModel):
             this_RI = self.output[i](feature[:,i]).view(B*nch, 2, self.band_width[i], -1)
             est_spec.append(torch.complex(this_RI[:,0], this_RI[:,1]))
         est_spec = torch.cat(est_spec, 1)
-        output = torch.istft(est_spec, n_fft=self.win, hop_length=self.stride, 
+        # Force fp32 for iSTFT — cuFFT requires power-of-2 sizes for fp16
+        output = torch.istft(est_spec.float(), n_fft=self.win, hop_length=self.stride,
                              window=torch.hann_window(self.win).to(input.device), length=nsample).view(B, nch, -1)
         
         return output
