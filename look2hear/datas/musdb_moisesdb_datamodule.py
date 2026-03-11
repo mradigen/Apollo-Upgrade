@@ -9,20 +9,22 @@ import torchaudio
 try:
     from torchaudio.functional import apply_codec
 except ImportError:
-    # apply_codec removed in torchaudio 2.x; use AudioEffector instead
-    import torchaudio.io as _taio
+    # apply_codec removed in torchaudio 2.x; round-trip via temp file
+    import io as _io
+    import tempfile as _tempfile
+    import os as _os
 
     def apply_codec(waveform, sample_rate, format, compression=None, **kwargs):
-        """Compat shim: (channels, samples) -> (channels, samples)."""
-        # AudioEffector expects (time, channels)
-        encoder_option = {"b": f"{compression}k"} if compression is not None else {}
-        effector = _taio.AudioEffector(
-            format=format,
-            encoder="libmp3lame" if format == "mp3" else None,
-            encoder_option=encoder_option or None,
-        )
-        result = effector.apply(waveform.T.contiguous(), sample_rate)
-        return result.T
+        """Compat shim: encode to temp file and decode back."""
+        suffix = f".{format}"
+        fd, tmp_path = _tempfile.mkstemp(suffix=suffix)
+        _os.close(fd)
+        try:
+            torchaudio.save(tmp_path, waveform, sample_rate, format=format)
+            result, _ = torchaudio.load(tmp_path)
+        finally:
+            _os.unlink(tmp_path)
+        return result
 from torch.utils.data import DataLoader, Dataset
 from typing import Any, Dict, Optional, Tuple
 
