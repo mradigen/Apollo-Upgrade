@@ -94,20 +94,22 @@ class SelectiveSSM(nn.Module):
             )
             return y
         else:
-            # Naive fallback — high memory usage
+            # Memory-efficient recurrent fallback: O(B*d_inner*d_state) instead of O(B*d_inner*L*d_state)
             dt = F.softplus(self.dt_proj(dt_raw))  # (B, L, d_inner)
-            dt_4d = dt.permute(0, 2, 1).unsqueeze(-1)
-            A_4d = A.reshape(1, self.d_inner, 1, self.d_state)
-            B_4d = B_ssm.unsqueeze(1)
-            x_4d = x.unsqueeze(-1)
+            dt = dt.permute(0, 2, 1)  # (B, d_inner, L)
+            B_t = B_ssm.permute(0, 2, 1)  # (B, d_state, L)
+            C_t = C_ssm.permute(0, 2, 1)  # (B, d_state, L)
 
-            log_A_bar = dt_4d * A_4d
-            Bu = (dt_4d * B_4d) * x_4d
-            log_A_cumsum = torch.cumsum(log_A_bar, dim=2)
-            h = torch.exp(log_A_cumsum) * torch.cumsum(torch.exp(-log_A_cumsum) * Bu, dim=2)
-
-            C_4d = C_ssm.unsqueeze(1)
-            y = (h * C_4d).sum(-1)
+            B_batch, d_inner, L = x.shape
+            h = torch.zeros(B_batch, d_inner, self.d_state, device=x.device, dtype=x.dtype)
+            ys = []
+            for t in range(L):
+                dt_t = dt[:, :, t].unsqueeze(-1)  # (B, d_inner, 1)
+                A_bar = torch.exp(dt_t * A)  # (B, d_inner, d_state)
+                h = A_bar * h + dt_t * B_t[:, :, t].unsqueeze(1) * x[:, :, t].unsqueeze(-1)
+                y_t = (h * C_t[:, :, t].unsqueeze(1)).sum(-1)  # (B, d_inner)
+                ys.append(y_t)
+            y = torch.stack(ys, dim=-1)  # (B, d_inner, L)
             return y + self.D.unsqueeze(0).unsqueeze(-1) * x
 
 class MambaBlock(nn.Module):
