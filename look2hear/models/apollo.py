@@ -421,7 +421,7 @@ class Apollo(BaseModel):
             est_spec.append(torch.complex(this_RI[:,0], this_RI[:,1]))
         est_spec = torch.cat(est_spec, 1)
         # Force fp32 for iSTFT — cuFFT requires power-of-2 sizes for fp16
-        output = torch.istft(est_spec.float(), n_fft=self.win, hop_length=self.stride,
+        output = torch.istft(est_spec.to(torch.complex64), n_fft=self.win, hop_length=self.stride,
                              window=torch.hann_window(self.win).to(input.device), length=nsample).view(B, nch, -1)
         
         return output
