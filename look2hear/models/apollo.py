@@ -6,6 +6,12 @@ import numpy as np
 import os
 from .base_model import BaseModel
 
+try:
+    from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
+    _HAS_MAMBA_KERNEL = True
+except ImportError:
+    _HAS_MAMBA_KERNEL = False
+
 class RMSNorm(nn.Module):
     def __init__(self, dimension, groups=1):
         super().__init__()
@@ -72,28 +78,37 @@ class SelectiveSSM(nn.Module):
         proj = self.x_proj(x_perm)  # (B, L, dt_rank + 2*d_state)
         dt_raw, B_ssm, C_ssm = torch.split(proj, [self.dt_rank, self.d_state, self.d_state], dim=-1)
 
-        dt = F.softplus(self.dt_proj(dt_raw))  # (B, L, d_inner)
         A = -torch.exp(self.A_log)  # (d_inner, d_state)
 
-        # Shapes: dt (B,L,d_inner), A (d_inner,d_state), B_ssm (B,L,d_state), x (B,d_inner,L)
-        # Target layout: (B, d_inner, L, d_state)
-        dt_4d = dt.permute(0, 2, 1).unsqueeze(-1)  # (B, d_inner, L, 1)
-        A_4d = A.reshape(1, self.d_inner, 1, self.d_state)  # (1, d_inner, 1, d_state)
-        B_4d = B_ssm.unsqueeze(1)  # (B, 1, L, d_state)
-        x_4d = x.unsqueeze(-1)  # (B, d_inner, L, 1)
+        if _HAS_MAMBA_KERNEL:
+            # Efficient CUDA kernel — avoids materializing 4D tensors
+            dt = self.dt_proj(dt_raw)  # (B, L, d_inner) — no softplus, kernel handles it
+            y = selective_scan_fn(
+                x.contiguous(),
+                dt.permute(0, 2, 1).contiguous(),
+                A.contiguous(),
+                B_ssm.permute(0, 2, 1).contiguous(),
+                C_ssm.permute(0, 2, 1).contiguous(),
+                D=self.D.float(),
+                delta_softplus=True,
+            )
+            return y
+        else:
+            # Naive fallback — high memory usage
+            dt = F.softplus(self.dt_proj(dt_raw))  # (B, L, d_inner)
+            dt_4d = dt.permute(0, 2, 1).unsqueeze(-1)
+            A_4d = A.reshape(1, self.d_inner, 1, self.d_state)
+            B_4d = B_ssm.unsqueeze(1)
+            x_4d = x.unsqueeze(-1)
 
-        log_A_bar = dt_4d * A_4d  # (B, d_inner, L, d_state)
-        Bu = (dt_4d * B_4d) * x_4d  # (B, d_inner, L, d_state)
+            log_A_bar = dt_4d * A_4d
+            Bu = (dt_4d * B_4d) * x_4d
+            log_A_cumsum = torch.cumsum(log_A_bar, dim=2)
+            h = torch.exp(log_A_cumsum) * torch.cumsum(torch.exp(-log_A_cumsum) * Bu, dim=2)
 
-        # Parallel scan: h[t] = exp(cumsum_A[t]) * cumsum(exp(-cumsum_A) * Bu)
-        log_A_cumsum = torch.cumsum(log_A_bar, dim=2)  # (B, d_inner, L, d_state)
-        h = torch.exp(log_A_cumsum) * torch.cumsum(torch.exp(-log_A_cumsum) * Bu, dim=2)
-
-        # y[t] = C[t] . h[t], sum over d_state
-        C_4d = C_ssm.unsqueeze(1)  # (B, 1, L, d_state)
-        y = (h * C_4d).sum(-1)  # (B, d_inner, L)
-
-        return y + self.D.unsqueeze(0).unsqueeze(-1) * x
+            C_4d = C_ssm.unsqueeze(1)
+            y = (h * C_4d).sum(-1)
+            return y + self.D.unsqueeze(0).unsqueeze(-1) * x
 
 class MambaBlock(nn.Module):
     def __init__(self, d_model, expand=2, d_state=16, d_conv=4):
