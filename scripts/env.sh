@@ -34,3 +34,7 @@ export WIN_PARTS=240
 # Trainer
 export PRECISION=16-mixed
 export WANDB_OFFLINE=1   # set to "" to use online wandb
+
+# Force torchaudio to use legacy sox/soundfile backend instead of torchcodec
+# (torchcodec requires FFmpeg shared libs which may not be installed)
+export TORCHAUDIO_USE_TORCHCODEC=0

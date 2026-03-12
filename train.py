@@ -12,7 +12,8 @@ from omegaconf import OmegaConf
 import argparse
 import pytorch_lightning as pl
 import torch
-torch.set_float32_matmul_precision("highest")
+torch.set_float32_matmul_precision("high")  # enables TF32 on H100 — much faster
+torch.multiprocessing.set_sharing_strategy('file_system')
 import hydra
 from pytorch_lightning.strategies.ddp import DDPStrategy
 from pytorch_lightning import Callback, LightningDataModule, LightningModule, Trainer

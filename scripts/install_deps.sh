@@ -43,7 +43,10 @@ uv pip install \
   torch-optimizer \
   huggingface-hub \
   torch-complex \
-  pyyaml
+  pyyaml \
+  torchaudio \
+  librosa \
+  torchcodec
 
 # ── Install mamba-ssm (requires nvcc) ─────────────────────────
 echo ""
