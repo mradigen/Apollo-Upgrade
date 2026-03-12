@@ -44,6 +44,7 @@ def main():
 
     config = {
         "exp": {"dir": args.exp_dir, "name": args.exp_name},
+        "compile": True,  # torch.compile — ~20-30% speedup, first epoch slower
         "seed": 614020,
         "datas": {
             "_target_": "look2hear.datas.MusdbMoisesdbDataModule",
@@ -63,6 +64,7 @@ def main():
             "num_samples": args.num_samples,
             "batch_size": args.batch_size,
             "num_workers": args.num_workers,
+            "persistent_workers": True,  # keep workers alive between epochs
         },
         "model": {
             "_target_": "look2hear.models.apollo.Apollo",

@@ -224,6 +224,7 @@ class MusdbMoisesdbDataModule(LightningDataModule):
         num_samples: int = 1000,
         batch_size: int = 32,
         num_workers: int = 4,
+        persistent_workers: bool = True,
         # New: allow using training data as validation when no eval set is provided
         val_from_train: bool = True,
         val_num_samples: int = 16,
@@ -299,8 +300,9 @@ class MusdbMoisesdbDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             shuffle=True,
             pin_memory=True,
+            persistent_workers=self.hparams.persistent_workers and self.hparams.num_workers > 0,
         )
-        
+
     def val_dataloader(self) -> DataLoader:
         return DataLoader(
             self.data_val,
@@ -308,4 +310,5 @@ class MusdbMoisesdbDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             shuffle=False,
             pin_memory=True,
+            persistent_workers=self.hparams.persistent_workers and self.hparams.num_workers > 0,
         )

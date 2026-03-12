@@ -85,6 +85,12 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     model: torch.nn.Module = hydra.utils.instantiate(cfg.model)
     print_only(f"Instantiating Discriminator <{cfg.discriminator._target_}>")
     discriminator: torch.nn.Module = hydra.utils.instantiate(cfg.discriminator)
+
+    # torch.compile — ~20-30% throughput boost on PyTorch 2.x (first epoch slower while compiling)
+    if cfg.get("compile", True):
+        print_only("Compiling model and discriminator with torch.compile...")
+        model = torch.compile(model)
+        discriminator = torch.compile(discriminator)
     
     # instantiate optimizer
     print_only(f"Instantiating optimizer <{cfg.optimizer_g._target_}>")

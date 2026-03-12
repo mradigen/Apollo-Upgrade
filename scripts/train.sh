@@ -7,17 +7,9 @@
 #   GPUS=1        → single GPU 1
 #   GPUS=0,1      → both GPUs (DDP)
 #
-# Required:
-#   DATASET_PATH  → path to HDF5 dataset dir
-#
-# Optional overrides (all have defaults):
-#   EXP_DIR, EXP_NAME, BATCH_SIZE, MAX_EPOCHS, NUM_SAMPLES,
-#   NUM_WORKERS, FEATURE_DIM, LAYERS, USE_MAMBA, MAMBA_EXPAND,
-#   MAMBA_DSTATE, MAMBA_DCONV, BANDWIDTH_D, BANDWIDTH_N,
-#   WIN_PARTS, PRECISION, WANDB_OFFLINE
-#
-# Example:
-#   GPUS=0,1 DATASET_PATH=/data/musdb18-hq BATCH_SIZE=16 bash scripts/train.sh
+# Source env.sh first, or set vars inline:
+#   source scripts/env.sh && bash scripts/train.sh
+#   GPUS=0,1 DATASET_PATH=/data/musdb18-hq bash scripts/train.sh
 # ==============================================================
 set -euo pipefail
 
@@ -29,7 +21,6 @@ cd "$REPO_DIR"
 # ── GPU selection ─────────────────────────────────────────────
 GPUS="${GPUS:-0}"
 
-# Build CUDA_VISIBLE_DEVICES and --devices arg for gen_config
 case "$GPUS" in
   "0")
     export CUDA_VISIBLE_DEVICES=0
@@ -58,11 +49,11 @@ if [[ -z "${DATASET_PATH:-}" ]]; then
   exit 1
 fi
 
-# ── Hyperparams (mirror Cell 1 defaults) ─────────────────────
+# ── Hyperparams ───────────────────────────────────────────────
 BATCH_SIZE="${BATCH_SIZE:-8}"
 MAX_EPOCHS="${MAX_EPOCHS:-100}"
 NUM_SAMPLES="${NUM_SAMPLES:-8000}"
-NUM_WORKERS="${NUM_WORKERS:-4}"
+NUM_WORKERS="${NUM_WORKERS:-16}"
 FEATURE_DIM="${FEATURE_DIM:-256}"
 LAYERS="${LAYERS:-6}"
 USE_MAMBA="${USE_MAMBA:-1}"
@@ -72,7 +63,7 @@ MAMBA_DCONV="${MAMBA_DCONV:-4}"
 BANDWIDTH_D="${BANDWIDTH_D:-80}"
 BANDWIDTH_N="${BANDWIDTH_N:-40}"
 WIN_PARTS="${WIN_PARTS:-240}"
-PRECISION="${PRECISION:-16-mixed}"
+PRECISION="${PRECISION:-bf16-mixed}"
 WANDB_OFFLINE="${WANDB_OFFLINE:-1}"
 
 EXP_DIR="${EXP_DIR:-$REPO_DIR/Exps}"
