@@ -29,7 +29,7 @@ echo "torch: $(python -c 'import torch; print(torch.__version__)')"
 # ── Install everything except mamba-ssm first ─────────────────
 echo ""
 echo "Installing base dependencies..."
-pip install \
+uv pip install \
   pytorch-lightning \
   hydra-core \
   omegaconf \
@@ -48,7 +48,7 @@ pip install \
 # ── Install mamba-ssm (requires nvcc) ─────────────────────────
 echo ""
 echo "Installing mamba-ssm (builds from source, takes a few minutes)..."
-pip install mamba-ssm
+uv pip install mamba-ssm
 
 echo ""
 echo "All dependencies installed successfully."
