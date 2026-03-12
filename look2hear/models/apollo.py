@@ -391,7 +391,10 @@ class Apollo(BaseModel):
             this_spec = spec[:,band_idx:band_idx+self.band_width[i]]
             subband_spec.append(this_spec)  # B, BW, T
             subband_power.append((this_spec.abs().pow(2).sum(1) + self.eps).sqrt().unsqueeze(1))  # B, 1, T
-            subband_spec_norm.append(torch.complex(this_spec.real / subband_power[-1], this_spec.imag / subband_power[-1]))  # B, BW, T
+            # torch.complex doesn't support bf16 — cast to fp32, build complex, cast back
+            real = (this_spec.real / subband_power[-1]).float()
+            imag = (this_spec.imag / subband_power[-1]).float()
+            subband_spec_norm.append(torch.complex(real, imag).to(this_spec.real.dtype))  # B, BW, T
             band_idx += self.band_width[i]
         subband_power = torch.cat(subband_power, 1)  # B, nband, T
 
@@ -420,7 +423,7 @@ class Apollo(BaseModel):
         est_spec = []
         for i in range(self.nband):
             this_RI = self.output[i](feature[:,i]).view(B*nch, 2, self.band_width[i], -1)
-            est_spec.append(torch.complex(this_RI[:,0], this_RI[:,1]))
+            est_spec.append(torch.complex(this_RI[:,0].float(), this_RI[:,1].float()))
         est_spec = torch.cat(est_spec, 1)
         # Force fp32 for iSTFT — cuFFT requires power-of-2 sizes for fp16
         output = torch.istft(est_spec.to(torch.complex64), n_fft=self.win, hop_length=self.stride,
