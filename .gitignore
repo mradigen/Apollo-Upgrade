@@ -6,3 +6,4 @@ asserts
 *.opus
 *.wav
 !codec.wav
+.venv
